@@ -112,7 +112,7 @@ func main() {
 			continue
 		}
 		changed = false
-		print(".")
+		//print(".")
 
 		rotX = math.Float32frombits(binary.LittleEndian.Uint32(bufRot[0:4]))
 		rotY = math.Float32frombits(binary.LittleEndian.Uint32(bufRot[4:8]))
@@ -120,7 +120,9 @@ func main() {
 
 		//fmt.Printf("%.3f, %.3f, %.3f\n", rotX, rotY, rotZ)
 
-		print(".")
+		//print(".")
+
+		println(int(rotX))
 
 		js.SetAxis(2, int(rotX*(65535.0/360.0))) // yaw
 		js.SetAxis(4, int(rotY*(65535.0/360.0))) // roll
