@@ -146,3 +146,21 @@ func must(action string, err error) {
 		panic("failed to " + action + ": " + err.Error())
 	}
 }
+
+func FromQuaternion(q0, q1, q2, q3 float64) (phi float64, theta float64, psi float64) {
+	phi = math.Atan2(2*(q0*q1+q2*q3), (q0*q0 - q1*q1 - q2*q2 + q3*q3))
+
+	v := -2 * (q0*q2 - q3*q1) / (q0*q0 + q1*q1 + q2*q2 + q3*q3)
+	if v >= 1 {
+		theta = math.Pi / 2
+	} else if v <= -1 {
+		theta = -math.Pi / 2
+	} else {
+		theta = math.Asin(v)
+	}
+	psi = math.Pi/2 - math.Atan2(2*(q0*q3+q1*q2), (q0*q0+q1*q1-q2*q2-q3*q3))
+	if psi < 0 {
+		psi += 2 * math.Pi
+	}
+	return
+}

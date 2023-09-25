@@ -5,7 +5,6 @@
 package main
 
 import (
-	"context"
 	"encoding/binary"
 	"errors"
 	"machine"
@@ -14,9 +13,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/tracktum/go-ahrs"
 	"tinygo.org/x/bluetooth"
 	"tinygo.org/x/drivers/lsm9ds1"
+
+	"edht/pkg/ahrs"
 )
 
 var adapter = bluetooth.DefaultAdapter
@@ -72,9 +72,9 @@ func main() {
 	imu := lsm9ds1.New(machine.I2C0)
 	err = imu.Configure(lsm9ds1.Configuration{
 		AccelRange:      lsm9ds1.ACCEL_2G,
-		AccelSampleRate: lsm9ds1.ACCEL_SR_952,
+		AccelSampleRate: lsm9ds1.ACCEL_SR_476,
 		GyroRange:       lsm9ds1.GYRO_250DPS,
-		GyroSampleRate:  lsm9ds1.GYRO_SR_952,
+		GyroSampleRate:  lsm9ds1.GYRO_SR_476,
 		MagRange:        lsm9ds1.MAG_4G,
 		MagSampleRate:   lsm9ds1.MAG_SR_80,
 	})
@@ -99,15 +99,13 @@ func main() {
 	}
 }
 
-var mux sync.Mutex
+// var mux sync.Mutex
 var q = [4]float64{}
+var rot = make([]byte, 4*3)
 
 func loop(char bluetooth.DeviceCharacteristic, imu *lsm9ds1.Device) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	madgwick := ahrs.NewMadgwick(1, 476*7/6)
-	madg := &madgwick
+	madg := ahrs.NewMadgwick(2)
+	madgref := &madg
 
 	//go doMadgwick(ctx, madg)
 
@@ -118,8 +116,8 @@ func loop(char bluetooth.DeviceCharacteristic, imu *lsm9ds1.Device) {
 
 		//q := [4]float64{}
 
-		declination := 5.32329
-		yawOffset := 140.0 - 90
+		//declination := 5.32329
+		//yawOffset := 140.0 - 82
 
 		var intvl = 7500 * time.Microsecond
 		var dt time.Duration
@@ -130,9 +128,8 @@ func loop(char bluetooth.DeviceCharacteristic, imu *lsm9ds1.Device) {
 		for {
 			start = time.Now()
 
-			//q = madg.Quaternions
+			//q = madgref.Quaternions
 
-			mux.Lock()
 			roll, pitch, yaw = FromQuaternion(q[0], q[1], q[2], q[3])
 			yaw = yaw * radToDeg
 			pitch = pitch * radToDeg
@@ -140,16 +137,15 @@ func loop(char bluetooth.DeviceCharacteristic, imu *lsm9ds1.Device) {
 			//yaw = getYaw(q)
 			//pitch = getPitch(q)
 			//roll = getRoll(q)
-			mux.Unlock()
 
-			yaw = yaw - declination
-			yaw = math.Mod(yaw+180+yawOffset, 360) - 180
-			if yaw < 0 {
-				yaw += 360.0
-			}
-			if yaw >= 360.0 {
-				yaw -= 360.0
-			}
+			//yaw = yaw - declination
+			//yaw = math.Mod(yaw+180+yawOffset, 360) - 180
+			//if yaw < 0 {
+			//	yaw += 360.0
+			//}
+			//if yaw >= 360.0 {
+			//	yaw -= 360.0
+			//}
 
 			//yaw, pitch, roll = FromQuaternion(quat[0], quat[1], quat[2], quat[3])
 
@@ -158,8 +154,6 @@ func loop(char bluetooth.DeviceCharacteristic, imu *lsm9ds1.Device) {
 			roll32 = float32(roll)
 
 			//fmt.Printf("%.3f, %.3f, %.3f\n", yaw, pitch, roll)
-
-			var rot = make([]byte, 4*3)
 
 			binary.LittleEndian.PutUint32(rot[0:4], math.Float32bits(yaw32))
 			binary.LittleEndian.PutUint32(rot[4:8], math.Float32bits(pitch32))
@@ -193,9 +187,8 @@ func loop(char bluetooth.DeviceCharacteristic, imu *lsm9ds1.Device) {
 	}()
 
 	updateIMU2(
-		ctx,
 		imu,
-		madg,
+		madgref,
 		char,
 	)
 	//sendEvents(char, madg)
@@ -348,7 +341,7 @@ func connect(pwm *machine.PWM, blue uint8, imu *lsm9ds1.Device) error {
 	return nil
 }
 
-func updateIMU2(ctx context.Context, imu *lsm9ds1.Device, madg *ahrs.Madgwick, char bluetooth.DeviceCharacteristic) {
+func updateIMU2(imu *lsm9ds1.Device, madg *ahrs.Madgwick, char bluetooth.DeviceCharacteristic) {
 	//f := 1000000000.0 / 476.0
 	//ticker := time.NewTicker(time.Duration(int64(f)) * time.Nanosecond)
 	//defer ticker.Stop()
@@ -439,7 +432,16 @@ func updateIMU2(ctx context.Context, imu *lsm9ds1.Device, madg *ahrs.Madgwick, c
 
 	//var globstart = time.Now()
 	start = time.Now()
+	var startall = time.Now()
+	var dtall = time.Duration(0)
+	var it = 0
 	for {
+		it++
+		if it == 500 {
+			madg.Beta = 0.1
+			print(">>>")
+		}
+		//startall = time.Now()
 		//globstart = time.Now()
 		//var got int
 		//for i := 0; i < 3; i++ {
@@ -459,7 +461,7 @@ func updateIMU2(ctx context.Context, imu *lsm9ds1.Device, madg *ahrs.Madgwick, c
 		}
 
 		dt = time.Since(start)
-		println(dt.Nanoseconds())
+		//println(dt.Microseconds())
 		//dti := dt.Microseconds()
 
 		start = time.Now()
@@ -492,7 +494,7 @@ func updateIMU2(ctx context.Context, imu *lsm9ds1.Device, madg *ahrs.Madgwick, c
 		//senses[0][7] = int32(float64(senses[0][7]+senses[1][7]+senses[2][7]) / 3.0)
 		//senses[0][8] = int32(float64(senses[0][8]+senses[1][8]+senses[2][8]) / 3.0)
 
-		mux.Lock()
+		//mux.Lock()
 		q = madg.Update9D(
 			-float64(gx-ogx)*mdegToRad,
 			float64(gy-ogy)*mdegToRad,
@@ -519,7 +521,7 @@ func updateIMU2(ctx context.Context, imu *lsm9ds1.Device, madg *ahrs.Madgwick, c
 		//	dt.Seconds(),
 		//	//dt,
 		//)
-		mux.Unlock()
+		//mux.Unlock()
 
 		//q = madg.Update9D(
 		//	-float64(gy-ogy)*mdegToRad,
@@ -665,10 +667,13 @@ func updateIMU2(ctx context.Context, imu *lsm9ds1.Device, madg *ahrs.Madgwick, c
 		//	(float64(mz) - float64(omz)),
 		//)
 
-		//dt = time.Since(start)
-		//if dt < 7500*time.Microsecond {
-		//	time.Sleep(7500*time.Microsecond - dt)
-		//}
+		dtall = time.Since(startall)
+		if dtall < 2101*time.Microsecond {
+			time.Sleep(2101*time.Microsecond - dtall)
+		} else {
+			println("@")
+		}
+		startall = time.Now()
 	}
 }
 
