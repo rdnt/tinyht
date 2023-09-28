@@ -42,6 +42,10 @@ func initLeds() error {
 		log("pwm configure failed", err)
 		return err
 	}
+	machine.PWM0.Set(led, 0)
+	machine.PWM0.Set(red, 0)
+	machine.PWM0.Set(green, 0)
+	machine.PWM0.Set(blue, 0)
 
 	return nil
 }

@@ -6,258 +6,125 @@ package main
 
 import (
 	"encoding/binary"
-	"errors"
-	"machine"
+	"fmt"
 	"math"
-	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"tinygo.org/x/bluetooth"
-	"tinygo.org/x/drivers/lsm9ds1"
 
 	"edht/pkg/ahrs"
 )
 
-var adapter = bluetooth.DefaultAdapter
-
 const deviceAddress = "E1:81:D2:59:12:48"
 
-func log(context string, err ...error) {
-	if len(err) > 0 {
-		println(context, err[0].Error())
+func log(msg string, additional ...any) {
+	if len(additional) > 0 {
+		print(msg, ": ", fmt.Sprint(additional[0]), "\n")
 	} else {
-		println(context)
+		println(msg)
 	}
 }
 
 func main() {
-	//time.Sleep(1 * time.Second)
-	println("initializing")
-
 	err := initLeds()
 	if err != nil {
 		return
 	}
 
-	println("i2c configure")
-
-	err = machine.I2C0.Configure(machine.I2CConfig{
-		Frequency: 400 * machine.KHz,
-		SDA:       machine.SDA0_PIN,
-		SCL:       machine.SCL0_PIN,
-	})
+	err = initI2C()
 	if err != nil {
-		log("i2c configure failed", err)
 		return
 	}
 
-	//time.Sleep(10 * time.Millisecond)
-
-	println("lsm9ds1 configure")
-
-	imu := lsm9ds1.New(machine.I2C0)
-	err = imu.Configure(lsm9ds1.Configuration{
-		AccelRange:      lsm9ds1.ACCEL_2G,
-		AccelSampleRate: lsm9ds1.ACCEL_SR_476,
-		GyroRange:       lsm9ds1.GYRO_250DPS,
-		GyroSampleRate:  lsm9ds1.GYRO_SR_476,
-		MagRange:        lsm9ds1.MAG_4G,
-		MagSampleRate:   lsm9ds1.MAG_SR_80,
-	})
+	err = initIMU()
 	if err != nil {
-		log("lsm9ds1 configure failed", err)
 		return
 	}
 
-	println("adapter configure")
-
-	err = adapter.Enable()
+	err = initBLE()
 	if err != nil {
-		log("ble enable failed", err)
 		return
 	}
+
+	madg := ahrs.NewMadgwick(1)
+
+	go loop(madg)
 
 	for {
-		connect(blue, imu)
+		run(madg)
 	}
 }
 
-var q = [4]float64{}
-var rot = make([]byte, 4*3)
-
-func loop(char bluetooth.DeviceCharacteristic, imu *lsm9ds1.Device) {
-	madg := ahrs.NewMadgwick(2)
-	madgref := &madg
-
-	go func() {
-
-		var yaw, pitch, roll float64
-		var yaw32, pitch32, roll32 float32
-
-		//q := [4]float64{}
-
-		//declination := 5.32329
-		//yawOffset := 140.0 - 82
-
-		var intvl = 7500 * time.Microsecond
-		var dt time.Duration
-		var err error
-		var start time.Time
-
-		//var dti int64
-		for {
-			start = time.Now()
-
-			//q = madgref.Quaternions
-
-			roll, pitch, yaw = FromQuaternion(q[0], q[1], q[2], q[3])
-			yaw = yaw * radToDeg
-			pitch = pitch * radToDeg
-			roll = roll * radToDeg
-			//yaw = getYaw(q)
-			//pitch = getPitch(q)
-			//roll = getRoll(q)
-
-			//yaw = yaw - declination
-			//yaw = math.Mod(yaw+180+yawOffset, 360) - 180
-			//if yaw < 0 {
-			//	yaw += 360.0
-			//}
-			//if yaw >= 360.0 {
-			//	yaw -= 360.0
-			//}
-
-			//yaw, pitch, roll = FromQuaternion(quat[0], quat[1], quat[2], quat[3])
-
-			yaw32 = float32(yaw)
-			pitch32 = float32(pitch)
-			roll32 = float32(roll)
-
-			//fmt.Printf("%.3f, %.3f, %.3f\n", yaw, pitch, roll)
-
-			binary.LittleEndian.PutUint32(rot[0:4], math.Float32bits(yaw32))
-			binary.LittleEndian.PutUint32(rot[4:8], math.Float32bits(pitch32))
-			binary.LittleEndian.PutUint32(rot[8:12], math.Float32bits(roll32))
-
-			_, err = char.WriteWithoutResponse(rot)
-
-			dt = time.Since(start)
-			if err != nil {
-				print("!")
-			}
-			//if err != nil {
-			//	fails++
-			//	if fails > 133 {
-			//		break
-			//	}
-			//} else {
-			//	fails = 0
-			//}
-
-			//dti = dt.Microseconds()
-			//println(dti)
-
-			if dt < intvl {
-				time.Sleep(intvl - dt)
-			} else {
-				print("[")
-			}
-		}
-
-	}()
-
-	updateIMU2(
-		imu,
-		madgref,
-		char,
-	)
-	//sendEvents(char, madg)
-}
-
-var device *bluetooth.Device
-
-var fifo = make(chan [9]int32, 10)
-var fifolen int
-var quat = [4]float64{}
-var quatMux sync.Mutex
-
-func connect(blue uint8, imu *lsm9ds1.Device) {
+func run(madg *ahrs.Madgwick) {
 	setLed(blue, true)
 
-	ch := make(chan bluetooth.ScanResult, 1)
-
-	println("scan")
-
-	err := adapter.Scan(func(adapter *bluetooth.Adapter, result bluetooth.ScanResult) {
-		println("device", result.Address.String())
-		if result.Address.String() == deviceAddress {
-			err := adapter.StopScan()
-			if err != nil {
-				log("ble stop scan failed", err)
-			}
-			ch <- result
-		}
-	})
+	dev, err := connect()
 	if err != nil {
-		log("ble scan failed", err)
 		return
-	}
-
-	select {
-	case result := <-ch:
-		device, err = adapter.Connect(result.Address, bluetooth.ConnectionParams{
-			ConnectionTimeout: bluetooth.NewDuration(4 * time.Second),
-			MinInterval:       bluetooth.NewDuration(7500 * time.Microsecond),
-			MaxInterval:       bluetooth.NewDuration(7500 * time.Microsecond),
-		})
-		if err != nil {
-			log("ble connect failed", err)
-			return
-		}
 	}
 	defer func() {
-		_ = device.Disconnect()
+		_ = dev.Disconnect()
 	}()
 
-	srvcs, err := device.DiscoverServices([]bluetooth.UUID{bluetooth.NewUUID(uuid.MustParse("e43e5547-afad-4309-81a4-1453c8fde090"))})
+	char, err := getCharacteristic(dev)
 	if err != nil {
-		log("service discovery failed", err)
 		return
 	}
-
-	if len(srvcs) == 0 {
-		err := errors.New("could not find service")
-		log("could not find service", err)
-		return
-	}
-
-	srvc := srvcs[0]
-
-	chars, err := srvc.DiscoverCharacteristics([]bluetooth.UUID{
-		bluetooth.NewUUID(uuid.MustParse("464e8563-de1d-4ff2-8e32-7761ce0620b6")),
-	})
-	if err != nil {
-		log("could not find characteristics", err)
-		return
-	}
-
-	if len(chars) == 0 {
-		err := errors.New("could not find characteristic")
-		log("could not find characteristics", err)
-		return
-	}
-
-	accChar := chars[0]
 
 	setLed(blue, false)
 
-	loop(accChar, imu)
-
-	return
+	sendEvents(madg, char)
 }
 
-func updateIMU2(imu *lsm9ds1.Device, madg *ahrs.Madgwick, char bluetooth.DeviceCharacteristic) {
+func sendEvents(madg *ahrs.Madgwick, char bluetooth.DeviceCharacteristic) {
+	var yaw, pitch, roll float64
+	var yaw32, pitch32, roll32 float32
+	rot := make([]byte, 4*3)
+
+	intvl := 7500 * time.Microsecond
+	var start time.Time
+	var dt time.Duration
+
+	var err error
+	var fails int
+
+	var quat [4]float64
+
+	for {
+		start = time.Now()
+
+		quat = madg.Quaternions
+		roll, pitch, yaw = FromQuaternion(quat[0], quat[1], quat[2], quat[3])
+		yaw = yaw * radToDeg
+		pitch = pitch * radToDeg
+		roll = roll * radToDeg
+
+		yaw32 = float32(yaw)
+		pitch32 = float32(pitch)
+		roll32 = float32(roll)
+
+		binary.LittleEndian.PutUint32(rot[0:4], math.Float32bits(yaw32))
+		binary.LittleEndian.PutUint32(rot[4:8], math.Float32bits(pitch32))
+		binary.LittleEndian.PutUint32(rot[8:12], math.Float32bits(roll32))
+
+		_, err = char.WriteWithoutResponse(rot)
+		if err != nil {
+			fails++
+			if fails > 133 {
+				break
+			}
+		} else {
+			fails = 0
+		}
+
+		dt = time.Since(start)
+		if dt < intvl {
+			time.Sleep(intvl - dt)
+		}
+	}
+}
+
+func loop(madg *ahrs.Madgwick) {
 	ogx := int32(6743242)
 	ogy := int32(489364)
 	ogz := int32(547766)
@@ -297,7 +164,7 @@ func updateIMU2(imu *lsm9ds1.Device, madg *ahrs.Madgwick, char bluetooth.DeviceC
 
 	start = time.Now()
 	var startall = time.Now()
-	var dtall = time.Duration(0)
+	var dtloop time.Duration
 	var it = 0
 	for {
 		it++
@@ -323,9 +190,7 @@ func updateIMU2(imu *lsm9ds1.Device, madg *ahrs.Madgwick, char bluetooth.DeviceC
 
 		dt = time.Since(start)
 
-		start = time.Now()
-
-		q = madg.Update9D(
+		madg.Update9D(
 			-float64(gx-ogx)*mdegToRad,
 			float64(gy-ogy)*mdegToRad,
 			float64(gz-ogz)*mdegToRad,
@@ -338,11 +203,10 @@ func updateIMU2(imu *lsm9ds1.Device, madg *ahrs.Madgwick, char bluetooth.DeviceC
 			dt.Seconds(),
 		)
 
-		dtall = time.Since(startall)
-		if dtall < 2101*time.Microsecond {
-			time.Sleep(2101*time.Microsecond - dtall)
-		} else {
-			println("@")
+		dtloop = time.Since(startall)
+		start = time.Now()
+		if dtloop < 2101*time.Microsecond {
+			time.Sleep(2101*time.Microsecond - dtloop)
 		}
 		startall = time.Now()
 	}

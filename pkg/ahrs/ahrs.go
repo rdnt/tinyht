@@ -9,15 +9,15 @@ type Madgwick struct {
 }
 
 // NewMadgwick initiates a Madwick struct
-func NewMadgwick(beta float64) Madgwick {
-	return Madgwick{
+func NewMadgwick(beta float64) *Madgwick {
+	return &Madgwick{
 		Beta:        beta,
 		Quaternions: [4]float64{1, 0, 0, 0},
 	}
 }
 
 // Update9D udpates position using 9D, returning quaternions
-func (m *Madgwick) Update9D(gx, gy, gz, ax, ay, az, mx, my, mz, dt float64) [4]float64 {
+func (m *Madgwick) Update9D(gx, gy, gz, ax, ay, az, mx, my, mz, dt float64) {
 	var recipNorm float64
 	var s0, s1, s2, s3 float64
 	var qDot1, qDot2, qDot3, qDot4 float64
@@ -110,8 +110,6 @@ func (m *Madgwick) Update9D(gx, gy, gz, ax, ay, az, mx, my, mz, dt float64) [4]f
 	m.Quaternions[1] = q1 * recipNorm
 	m.Quaternions[2] = q2 * recipNorm
 	m.Quaternions[3] = q3 * recipNorm
-
-	return m.Quaternions
 }
 
 // Update6D updates position using 6D, returning quaternions

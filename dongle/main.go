@@ -55,7 +55,7 @@ func main() {
 
 	println("enabling")
 
-	var rotX, rotY, rotZ float32
+	var yaw, pitch, roll float64
 	//var rotX, rotY float32
 
 	//update := func() {
@@ -78,6 +78,12 @@ func main() {
 	bufRot := make([]byte, 12)
 
 	var changed bool
+
+	adapter.SetConnectHandler(func(device bluetooth.Address, connected bool) {
+		if connected {
+			js = joystick.Port()
+		}
+	})
 
 	must("add serviceUUID", adapter.AddService(&bluetooth.Service{
 		UUID: serviceUUID,
@@ -106,6 +112,9 @@ func main() {
 
 	println("looping")
 
+	declination := 5.32329
+	yawOffset := 140.0
+
 	for range time.Tick(7500 * time.Microsecond) {
 		if !changed {
 			pwm.Set(blue, 0)
@@ -114,19 +123,28 @@ func main() {
 		changed = false
 		//print(".")
 
-		rotX = math.Float32frombits(binary.LittleEndian.Uint32(bufRot[0:4]))
-		rotY = math.Float32frombits(binary.LittleEndian.Uint32(bufRot[4:8]))
-		rotZ = math.Float32frombits(binary.LittleEndian.Uint32(bufRot[8:12]))
+		yaw = float64(math.Float32frombits(binary.LittleEndian.Uint32(bufRot[0:4])))
+		pitch = float64(math.Float32frombits(binary.LittleEndian.Uint32(bufRot[4:8])))
+		roll = float64(math.Float32frombits(binary.LittleEndian.Uint32(bufRot[8:12])))
 
 		//fmt.Printf("%.3f, %.3f, %.3f\n", rotX, rotY, rotZ)
 
 		//print(".")
 
-		println(int(rotX))
+		//println(int(rotX))
 
-		js.SetAxis(2, int(rotX*(65535.0/360.0))) // yaw
-		js.SetAxis(4, int(rotY*(65535.0/360.0))) // roll
-		js.SetAxis(3, int(rotZ*(65535.0/360.0))) // pitch
+		yaw = yaw - declination
+		yaw = math.Mod(yaw+180+yawOffset, 360) - 180
+		if yaw < 0 {
+			yaw += 360.0
+		}
+		if yaw >= 360.0 {
+			yaw -= 360.0
+		}
+
+		js.SetAxis(2, int(yaw*(65535.0/360.0)))   // yaw
+		js.SetAxis(4, int(pitch*(65535.0/360.0))) // roll
+		js.SetAxis(3, int(roll*(65535.0/360.0)))  // pitch
 		js.SendState()
 
 		if pak == 0 {
