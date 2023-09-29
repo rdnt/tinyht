@@ -22,11 +22,11 @@ func main() {
 	}
 
 	buf := make([]byte, 12)
-	updateCh := make(chan []byte, 1)
+	update := make(chan bool, 1)
 
 	err = initBLE(func(b []byte) {
 		copy(buf, b)
-		updateCh <- buf
+		update <- true
 	})
 	if err != nil {
 		return
@@ -37,10 +37,10 @@ func main() {
 	declination := 5.32329
 	yawOffset := 140.0
 
-	for b := range updateCh {
-		yaw := float64(math.Float32frombits(binary.LittleEndian.Uint32(b[0:4])))
-		pitch := float64(math.Float32frombits(binary.LittleEndian.Uint32(b[4:8])))
-		roll := float64(math.Float32frombits(binary.LittleEndian.Uint32(b[8:12])))
+	for range update {
+		yaw := float64(math.Float32frombits(binary.LittleEndian.Uint32(buf[0:4])))
+		pitch := float64(math.Float32frombits(binary.LittleEndian.Uint32(buf[4:8])))
+		roll := float64(math.Float32frombits(binary.LittleEndian.Uint32(buf[8:12])))
 
 		yaw = yaw - declination
 		yaw = math.Mod(yaw+180+yawOffset, 360) - 180
