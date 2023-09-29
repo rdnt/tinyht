@@ -1,4 +1,4 @@
-module edht
+module tinyhtg
 
 go 1.19
 
