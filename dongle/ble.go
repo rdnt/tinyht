@@ -25,6 +25,12 @@ func initBLE(onUpdate func([]byte)) error {
 		return err
 	}
 
+	bluetooth.DefaultAdapter.SetConnectHandler(func(device bluetooth.Address, connected bool) {
+		if !connected {
+			setLed(blue, false)
+		}
+	})
+
 	err = bluetooth.DefaultAdapter.AddService(&bluetooth.Service{
 		UUID: serviceUUID,
 		Characteristics: []bluetooth.CharacteristicConfig{

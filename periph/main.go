@@ -10,7 +10,7 @@ import (
 	"math"
 	"time"
 
-	"edht/pkg/ahrs"
+	"tinyht/pkg/ahrs"
 )
 
 const (
@@ -78,6 +78,7 @@ func sendEvents(madg *ahrs.Madgwick) {
 	setLed(blue, false)
 
 	rot := make([]byte, 4*3)
+	i := 0
 	fails := 0
 
 	for {
@@ -95,6 +96,7 @@ func sendEvents(madg *ahrs.Madgwick) {
 
 		_, err = char.WriteWithoutResponse(rot)
 		if err != nil {
+			setLed(blue, false)
 			fails++
 			if fails > 133 {
 				// 1 second of failures? we probably lost connection
@@ -102,6 +104,13 @@ func sendEvents(madg *ahrs.Madgwick) {
 			}
 		} else {
 			fails = 0
+
+			i = (i + 1) % 24
+			if i == 0 {
+				setLed(blue, false)
+			} else if i > 12 {
+				setLed(blue, true)
+			}
 		}
 
 		dt := time.Since(start)
