@@ -1,3 +1,5 @@
+// Package ahrs is a modified version of github.com/tracktum/go-ahrs to allow
+// on-the-fly beta updates as well as dynamic deltaT
 package ahrs
 
 import "math"
