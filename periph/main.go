@@ -10,12 +10,17 @@ import (
 	"math"
 	"time"
 
-	"tinygo.org/x/bluetooth"
-
 	"edht/pkg/ahrs"
 )
 
-const deviceAddress = "E1:81:D2:59:12:48"
+const (
+	deviceAddress         = "E1:81:D2:59:12:48"
+	mdegToRad             = math.Pi / 180.0 / 1000000.0
+	radToDeg              = 180.0 / math.Pi
+	bleConnectionInterval = 7500 * time.Microsecond
+	sensorPollFreq        = 476
+	sensorPollInterval    = 2100840 * time.Nanosecond
+)
 
 func log(msg string, additional ...any) {
 	if len(additional) > 0 {
@@ -47,15 +52,14 @@ func main() {
 	}
 
 	madg := ahrs.NewMadgwick(1)
-
 	go loop(madg)
 
 	for {
-		run(madg)
+		sendEvents(madg)
 	}
 }
 
-func run(madg *ahrs.Madgwick) {
+func sendEvents(madg *ahrs.Madgwick) {
 	setLed(blue, true)
 
 	dev, err := connect()
@@ -73,122 +77,75 @@ func run(madg *ahrs.Madgwick) {
 
 	setLed(blue, false)
 
-	sendEvents(madg, char)
-}
-
-func sendEvents(madg *ahrs.Madgwick, char bluetooth.DeviceCharacteristic) {
-	var yaw, pitch, roll float64
-	var yaw32, pitch32, roll32 float32
 	rot := make([]byte, 4*3)
-
-	intvl := 7500 * time.Microsecond
-	var start time.Time
-	var dt time.Duration
-
-	var err error
-	var fails int
-
-	var quat [4]float64
+	fails := 0
 
 	for {
-		start = time.Now()
+		start := time.Now()
 
-		quat = madg.Quaternions
-		roll, pitch, yaw = FromQuaternion(quat[0], quat[1], quat[2], quat[3])
+		quat := madg.Quaternions
+		roll, pitch, yaw := FromQuaternion(quat[0], quat[1], quat[2], quat[3])
 		yaw = yaw * radToDeg
 		pitch = pitch * radToDeg
 		roll = roll * radToDeg
 
-		yaw32 = float32(yaw)
-		pitch32 = float32(pitch)
-		roll32 = float32(roll)
-
-		binary.LittleEndian.PutUint32(rot[0:4], math.Float32bits(yaw32))
-		binary.LittleEndian.PutUint32(rot[4:8], math.Float32bits(pitch32))
-		binary.LittleEndian.PutUint32(rot[8:12], math.Float32bits(roll32))
+		binary.LittleEndian.PutUint32(rot[0:4], math.Float32bits(float32(yaw)))
+		binary.LittleEndian.PutUint32(rot[4:8], math.Float32bits(float32(pitch)))
+		binary.LittleEndian.PutUint32(rot[8:12], math.Float32bits(float32(roll)))
 
 		_, err = char.WriteWithoutResponse(rot)
 		if err != nil {
 			fails++
 			if fails > 133 {
+				// 1 second of failures? we probably lost connection
 				break
 			}
 		} else {
 			fails = 0
 		}
 
-		dt = time.Since(start)
-		if dt < intvl {
-			time.Sleep(intvl - dt)
+		dt := time.Since(start)
+		if dt < bleConnectionInterval {
+			time.Sleep(bleConnectionInterval - dt)
 		}
 	}
 }
 
 func loop(madg *ahrs.Madgwick) {
-	ogx := int32(6743242)
-	ogy := int32(489364)
-	ogz := int32(547766)
-
-	ogx = int32(812490)
-	ogy = int32(7370154)
-	ogz = int32(1029393)
-
 	// no soft iron, on floor sensor
 	//>+6.434198e+006 +1.079803e+005 +1.093925e+006
-	ogx = int32(6434198)
-	ogy = int32(107980)
-	ogz = int32(1093925)
+	ogx := int32(6434198)
+	ogy := int32(107980)
+	ogz := int32(1093925)
 
-	omx := 2625.0
-	omy := -10801.0
-	omz := -32697.0
+	omx := 16466.0
+	omy := 2289.0
+	omz := -36624.0
 
-	omx = 16466.0
-	omy = 2289.0
-	omz = -36624.0
+	i := 0
 
-	var gx, gy, gz int32
-	var ax, ay, az int32
-	var mx, my, mz int32
-
-	var err error
-
-	mdegToRad := (math.Pi / 180.0 / 1000000.0)
-
-	var start = time.Now()
-	var dt = time.Duration(0)
-
-	ival := 1e9 / 476.0
-	var intvl = time.Duration(ival) * time.Nanosecond
-	println("ival", intvl)
-
-	start = time.Now()
-	var startall = time.Now()
-	var dtloop time.Duration
-	var it = 0
 	for {
-		it++
-		if it == 500 {
+		start := time.Now()
+
+		i++
+		if i == sensorPollFreq {
 			madg.Beta = 0.1
-			print(">>>")
 		}
 
-		gx, gy, gz, err = imu.ReadRotation()
+		gx, gy, gz, err := imu.ReadRotation()
 		if err != nil {
 			continue
 		}
 
-		ax, ay, az, err = imu.ReadAcceleration()
+		ax, ay, az, err := imu.ReadAcceleration()
 		if err != nil {
 			continue
 		}
 
-		mx, my, mz, err = imu.ReadMagneticField()
+		mx, my, mz, err := imu.ReadMagneticField()
 		if err != nil {
 			continue
 		}
-
-		dt = time.Since(start)
 
 		madg.Update9D(
 			-float64(gx-ogx)*mdegToRad,
@@ -200,19 +157,15 @@ func loop(madg *ahrs.Madgwick) {
 			float64(mx)-omx,
 			float64(my)-omy,
 			float64(mz)-omz,
-			dt.Seconds(),
+			time.Since(start).Seconds(),
 		)
 
-		dtloop = time.Since(startall)
-		start = time.Now()
-		if dtloop < 2101*time.Microsecond {
-			time.Sleep(2101*time.Microsecond - dtloop)
+		dt := time.Since(start)
+		if dt < sensorPollInterval {
+			time.Sleep(sensorPollInterval - dt)
 		}
-		startall = time.Now()
 	}
 }
-
-var radToDeg = 180.0 / math.Pi
 
 func FromQuaternion(q0, q1, q2, q3 float64) (phi float64, theta float64, psi float64) {
 	phi = math.Atan2(2*(q0*q1+q2*q3), q0*q0-q1*q1-q2*q2+q3*q3)
@@ -225,9 +178,11 @@ func FromQuaternion(q0, q1, q2, q3 float64) (phi float64, theta float64, psi flo
 	} else {
 		theta = math.Asin(v)
 	}
-	psi = math.Pi/2 - math.Atan2(2*(q0*q3+q1*q2), (q0*q0+q1*q1-q2*q2-q3*q3))
+
+	psi = math.Pi/2 - math.Atan2(2*(q0*q3+q1*q2), q0*q0+q1*q1-q2*q2-q3*q3)
 	if psi < 0 {
 		psi += 2 * math.Pi
 	}
+
 	return
 }
