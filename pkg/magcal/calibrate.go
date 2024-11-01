@@ -61,7 +61,7 @@ func QuadricFit(m [][3]float64) ([9]float64, error) {
 	return data, nil
 }
 
-// Calibrate calculates the hard iron [b] and the soft iron [K] errors in
+// Calibrate calculates the [hard] iron and the [soft] iron errors in
 // the given magnetometer data [m], using the least squares method for
 // ellipsoid fitting.
 //
