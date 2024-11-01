@@ -2,6 +2,7 @@ package magcal
 
 import (
 	"errors"
+	"math"
 
 	"gonum.org/v1/gonum/mat"
 )
@@ -54,10 +55,13 @@ func QuadricFit(m [][3]float64) ([9]float64, error) {
 	xtmp.Mul(inv, xt)
 	btmp.Mul(xtmp, y)
 
-	return [9]float64(btmp.RawMatrix().Data), nil
+	data := [9]float64{}
+	mat.Col(data[:], 0, btmp)
+
+	return data, nil
 }
 
-// Calibrate calculates the soft iron [K] and the hard iron [b] errors in
+// Calibrate calculates the hard iron [b] and the soft iron [K] errors in
 // the given magnetometer data [m], using the least squares method for
 // ellipsoid fitting.
 //
@@ -70,7 +74,7 @@ func QuadricFit(m [][3]float64) ([9]float64, error) {
 // If unknown, a sensible default of 50.0 is used.
 //
 // This function is a port of zsl_fus_cal_magn_fast from the Zephyr zscilib package.
-func Calibrate(m [][3]float64, me ...float64) (K [9]float64, b [3]float64, err error) {
+func Calibrate(m [][3]float64, me ...float64) (hard [3]float64, soft [9]float64, err error) {
 	var me2 = 50.0
 	if len(me) > 0 {
 		me2 = me[0]
@@ -78,7 +82,7 @@ func Calibrate(m [][3]float64, me ...float64) (K [9]float64, b [3]float64, err e
 
 	coeff, err := QuadricFit(m)
 	if err != nil {
-		return [9]float64{}, [3]float64{}, err
+		return [3]float64{}, [9]float64{}, err
 	}
 
 	A := mat.NewSymDense(3, []float64{
@@ -100,15 +104,25 @@ func Calibrate(m [][3]float64, me ...float64) (K [9]float64, b [3]float64, err e
 	})
 
 	X0 := mat.NewDense(3, 1, nil)
+	Ai := mat.NewDense(3, 3, nil)
+
+	err = Ai.Inverse(A)
+	if err != nil {
+		return [3]float64{}, [9]float64{}, err
+	}
+
+	X0.Mul(Ai, v)
+
+	hard = [3]float64(X0.RawMatrix().Data)
+
 	L := mat.NewTriDense(3, mat.Lower, nil)
 	G := mat.NewDense(3, 3, nil)
-	Ai := mat.NewDense(3, 3, nil)
 
 	var chol mat.Cholesky
 
 	ok := chol.Factorize(A)
 	if !ok {
-		return [9]float64{}, [3]float64{}, errors.New("matrix is not positive definite")
+		return hard, [9]float64{}, errors.New("matrix is not positive definite")
 	}
 
 	chol.LTo(L)
@@ -130,16 +144,118 @@ func Calibrate(m [][3]float64, me ...float64) (K [9]float64, b [3]float64, err e
 	Km := mat.NewDense(3, 3, nil)
 	Km.CloneFrom(G)
 
-	K = [9]float64(Km.RawMatrix().Data)
+	soft = [9]float64(Km.RawMatrix().Data)
+
+	return hard, soft, nil
+}
+
+func calibrateZscilib(m [][3]float64, me ...float64) (hard [3]float64, soft [9]float64, err error) {
+	var me2 = 50.0
+	if len(me) > 0 {
+		me2 = me[0]
+	}
+
+	coeff, err := QuadricFit(m)
+	if err != nil {
+		return [3]float64{}, [9]float64{}, err
+	}
+
+	A := mat.NewSymDense(3, []float64{
+		0: coeff[0],
+		1: coeff[3],
+		2: coeff[4],
+		3: coeff[3],
+		4: coeff[1],
+		5: coeff[5],
+		6: coeff[4],
+		7: coeff[5],
+		8: coeff[2],
+	})
+
+	v := mat.NewDense(3, 1, []float64{
+		0: coeff[6],
+		1: coeff[7],
+		2: coeff[8],
+	})
+
+	X0 := mat.NewDense(3, 1, nil)
+	Ai := mat.NewDense(3, 3, nil)
 
 	err = Ai.Inverse(A)
 	if err != nil {
-		return K, [3]float64{}, err
+		return [3]float64{}, soft, err
 	}
 
 	X0.Mul(Ai, v)
 
-	b = [3]float64(X0.RawMatrix().Data)
+	hard = [3]float64(X0.RawMatrix().Data)
 
-	return K, b, nil
+	L := mat.NewTriDense(3, mat.Lower, nil)
+	G := mat.NewDense(3, 3, nil)
+
+	input := [3][3]float64{}
+	mat.Row(input[0][:], 0, A)
+	mat.Row(input[1][:], 1, A)
+	mat.Row(input[2][:], 2, A)
+	dia := cholesky(input)
+
+	L.SetTri(0, 0, dia[0][0])
+	L.SetTri(1, 0, dia[1][0])
+	L.SetTri(1, 1, dia[1][1])
+	L.SetTri(2, 0, dia[2][0])
+	L.SetTri(2, 1, dia[2][1])
+	L.SetTri(2, 2, dia[2][2])
+
+	mul := mat.NewDense(3, 3, []float64{
+		0: me2,
+		1: me2,
+		2: me2,
+		3: me2,
+		4: me2,
+		5: me2,
+		6: me2,
+		7: me2,
+		8: me2,
+	})
+
+	G.MulElem(L.T(), mul)
+
+	Km := mat.NewDense(3, 3, nil)
+	Km.CloneFrom(G)
+
+	soft = [9]float64(Km.RawMatrix().Data)
+
+	return hard, soft, nil
+}
+
+func cholesky(input [3][3]float64) [3][3]float64 {
+	var sum, x, y float64
+	cols := 3
+
+	lower := [3][3]float64{}
+
+	for j := 0; j < cols; j++ {
+		sum = 0
+		for k := 0; k < j; k++ {
+			x = lower[j][k]
+			sum += x * x
+		}
+		x = input[j][j]
+		lower[j][j] = math.Sqrt(x - sum)
+
+		for i := j + 1; i < cols; i++ {
+			sum = 0
+			for k := 0; k < j; k++ {
+				x = lower[j][k]
+				y = lower[i][k]
+				sum += y * x
+			}
+			x = lower[j][j]
+			y = input[i][j]
+			lower[i][j] = (y - sum) / x
+		}
+
+	}
+
+	return lower
 }
